@@ -63,7 +63,6 @@ endif()
 #===============================================================================
 #= Dependencies
 #-------------------------------------------------------------------------------
-
 list(APPEND PKGDEPS libsigrokcxx>=0.4.0)
 
 if(ENABLE_DECODE)
@@ -106,6 +105,49 @@ endif()
 # Find the platform's thread library (needed for C++11 threads).
 # This will set ${CMAKE_THREAD_LIBS_INIT} to the correct, OS-specific value.
 find_package(Threads REQUIRED)
+
+
+# Check for explicit link against libatomic
+#
+# Depending on the toolchain, linking a program using atomic functions may need
+# "-latomic" explicitly passed to the linker
+#
+# This check first tests if atomics are available in the C-library, if not and
+# libatomic exists, then it runs the same test with -latomic added to the
+# linker flags.
+
+include(CheckCXXSourceCompiles)
+include(CheckLibraryExists)
+
+# Helper for checking for atomics
+function(check_working_cxx_atomics varname)
+  set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+  set(CMAKE_REQUIRED_FLAGS "-std=c++11")
+  CHECK_CXX_SOURCE_COMPILES("
+#include <atomic>
+std::atomic<int> x;
+int main() {
+return std::atomic_fetch_add_explicit(&x, 1, std::memory_order_seq_cst);
+}
+" ${varname})
+  set(CMAKE_REQUIRED_FLAGS ${OLD_CMAKE_REQUIRED_FLAGS})
+endfunction(check_working_cxx_atomics)
+
+# First check if atomics work without the library.
+check_working_cxx_atomics(HAVE_CXX_ATOMICS_WITHOUT_LIB)
+# If not, check if the library exists, and atomics work with it.
+if(NOT HAVE_CXX_ATOMICS_WITHOUT_LIB)
+  CHECK_LIBRARY_EXISTS(atomic __atomic_store "" HAVE_LIBATOMIC)
+  if( HAVE_LIBATOMIC )
+    list(APPEND CMAKE_REQUIRED_LIBRARIES "atomic")
+    check_working_cxx_atomics(HAVE_CXX_ATOMICS_WITH_LIB)
+    if (NOT HAVE_CXX_ATOMICS_WITH_LIB)
+      message(FATAL_ERROR "Host compiler must support std::atomic!")
+    endif()
+  else()
+    message(FATAL_ERROR "Host compiler appears to require libatomic, but cannot find it.")
+  endif()
+endif()
 
 #===============================================================================
 #= System Introspection
@@ -387,6 +429,7 @@ set(PULSEVIEW_LINK_LIBS
 	${Boost_LIBRARIES}
 	${QT_LIBRARIES}
 	${CMAKE_THREAD_LIBS_INIT}
+	${CMAKE_REQUIRED_LIBRARIES}
 )
 
 if(STATIC_PKGDEPS_LIBS)
